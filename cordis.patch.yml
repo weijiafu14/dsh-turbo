@@ -1,0 +1,5 @@
+# dsh-turbo mounts as one ordinary cordis plugin; all tuning lives in the
+# optional `dsh-turbo:` section of $DSH_HOME/settings.yaml (hot-reloaded).
+- insert:
+    - id: dsh-turbo
+      name: "dsh-turbo"
