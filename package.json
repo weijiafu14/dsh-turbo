@@ -11,6 +11,15 @@
     "llm-as-a-verifier",
     "test-time-scaling"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/weijiafu14/dsh-turbo.git"
+  },
+  "homepage": "https://github.com/weijiafu14/dsh-turbo#readme",
+  "bugs": {
+    "url": "https://github.com/weijiafu14/dsh-turbo/issues"
+  },
+  "author": "weijiafu14",
   "exports": {
     ".": {
       "types": "./dist/index.d.mts",

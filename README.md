@@ -39,6 +39,20 @@ Every conversation model call (auxiliary calls like compaction/session titles pa
 
 Verifier prompts share a byte-identical prefix (system + task context) across all pairs and criteria of a step, so DeepSeek prefix caching absorbs most of the verification input cost.
 
+## Example: one image in, a playable 3D game out
+
+[`examples/vision-3d-game`](examples/vision-3d-game) is the full end-to-end run
+on a stock DSH install — a maze image pasted into the composer, and the agent
+builds a first-person 3D dungeon crawler from what it saw, then converts it into
+a Counter-Strike style FPS in a follow-up turn. Both games were written entirely
+by the model; open them in a browser and play.
+
+![maze strike](examples/vision-3d-game/assets/02-maze-strike.png)
+
+Across those two turns: 25 fan-out steps, 5 candidates each, **zero degraded**,
+740 verifier calls, 19 M cached prompt tokens.
+
+
 ## The `/turbo` command
 
 - `/turbo` — last decision (per-candidate scores, tournament outcome, previews) and cumulative extra spend.
