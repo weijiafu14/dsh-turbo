@@ -85,6 +85,15 @@ async function filesBelow(directory) {
   return out
 }
 
+/**
+ * Content blocks of one session record. The persisted shapes differ by event:
+ * user/message carries `data.content` directly, assistant/message wraps it as
+ * `data.message.content` — accept both.
+ */
+function blocksOf(record) {
+  return record.data?.message?.content ?? record.data?.content ?? []
+}
+
 async function allSessionRecords(sessionsRoot) {
   const files = (await filesBelow(sessionsRoot)).filter(path => path.endsWith('session.jsonl'))
   const records = []
@@ -240,7 +249,7 @@ try {
       records = await allSessionRecords(join(home, 'sessions-web'))
       const turnEnd = records.findLast(record => record.type === 'turn/end')
       const doneText = records.some(record => record.type === 'assistant/message'
-        && (record.data?.message?.content ?? []).some(block => block.type === 'text' && /GAME_DONE/u.test(block.text)))
+        && blocksOf(record).some(block => block.type === 'text' && /GAME_DONE/u.test(block.text)))
       if (turnEnd?.data?.reason?.kind === 'completed' && doneText) break
       assert(Date.now() < deadline, 'timed out waiting for the completed 3D-game turn')
       assert(web.exitCode === null, `dsh web exited mid-turn:\n${logRef.value.slice(-3000)}`)
@@ -253,14 +262,14 @@ try {
     // ---- 5. assertions ----------------------------------------------------
     // (a) The image went in as a native attachment on the user message.
     const userImage = records.find(record => record.type === 'user/message'
-      && (record.data?.message?.content ?? []).some(block => block.type === 'image' && block.attachment?.attachmentId))
+      && blocksOf(record).some(block => block.type === 'image' && block.attachment?.attachmentId))
     assert(userImage, 'the user message carries no native image attachment — the paste path did not work')
 
     // (b) The model actually SAW the image: the reply must name the structure
     // the prompt never mentioned.
     const assistantText = records
       .filter(record => record.type === 'assistant/message')
-      .flatMap(record => record.data?.message?.content ?? [])
+      .flatMap(record => blocksOf(record))
       .filter(block => block.type === 'text')
       .map(block => block.text)
       .join('\n')
