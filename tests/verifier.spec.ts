@@ -111,18 +111,25 @@ describe('extractPairScores', () => {
 })
 
 describe('buildPairMessages', () => {
-  it('keeps the shared prefix stable and varies only the final message', () => {
+  it('layers messages for prefix caching: context, then pair, then criterion', () => {
     const context = [{ type: 'text' as const, text: 'task transcript' }]
     const first = buildPairMessages(context, 'cand-A', 'cand-B', CODING_CRITERIA[0]!)
     const second = buildPairMessages(context, 'cand-C', 'cand-D', CODING_CRITERIA[1]!)
-    expect(first).toHaveLength(3)
-    // System + context identical (prefix-cache friendly); pair message differs.
+    const samePairOtherCriterion = buildPairMessages(context, 'cand-A', 'cand-B', CODING_CRITERIA[1]!)
+    expect(first).toHaveLength(4)
+    // System + context identical across everything in the step.
     expect(JSON.stringify(first[0])).toBe(JSON.stringify(second[0]))
     expect(JSON.stringify(first[1])).toBe(JSON.stringify(second[1]))
+    // The pair message is stable across criteria of the same pair (cache!),
+    // and differs across pairs.
+    expect(JSON.stringify(first[2])).toBe(JSON.stringify(samePairOtherCriterion[2]))
     expect(JSON.stringify(first[2])).not.toBe(JSON.stringify(second[2]))
+    // Only the final message carries the criterion.
+    expect(JSON.stringify(first[3])).not.toBe(JSON.stringify(samePairOtherCriterion[3]))
     const pair = first[2] as { content: string }
     expect(pair.content).toContain('cand-A')
     expect(pair.content).toContain('cand-B')
-    expect(pair.content).toContain(CODING_CRITERIA[0]!.name)
+    const criterion = first[3] as { content: string }
+    expect(criterion.content).toContain(CODING_CRITERIA[0]!.name)
   })
 })

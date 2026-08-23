@@ -97,10 +97,14 @@ function stubWire(byTemperature: Record<string, Response | (() => Response)>): {
       return typeof entry === 'function' ? entry() : entry.clone()
     }
     // Verifier call: the GOOD candidate always wins, whichever side it is on.
-    const last = body.messages[body.messages.length - 1] as { content: string }
-    const aStart = last.content.indexOf('=== Candidate A ===')
-    const bStart = last.content.indexOf('=== Candidate B ===')
-    const aText = last.content.slice(aStart, bStart)
+    const pairMessage = body.messages
+      .map(message => (message as { content: unknown }).content)
+      .filter((content): content is string => typeof content === 'string')
+      .find(content => content.includes('=== Candidate A ==='))
+    if (pairMessage === undefined) throw new Error('verifier request carries no candidate pair message')
+    const aStart = pairMessage.indexOf('=== Candidate A ===')
+    const bStart = pairMessage.indexOf('=== Candidate B ===')
+    const aText = pairMessage.slice(aStart, bStart)
     const goodOnA = aText.includes('GOOD')
     return goodOnA ? verifierResponse(17, 4) : verifierResponse(4, 17)
   }))

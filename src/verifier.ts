@@ -58,13 +58,21 @@ export function buildPairMessages(
   candidateB: string,
   criterion: Criterion,
 ): WireMessage[] {
+  // Message layering is deliberate cache economics: system + context are
+  // byte-identical across the whole step, and the candidate-pair message is
+  // byte-identical across this pair's C x K criterion calls — so provider
+  // prefix caching pays for candidates (often whole generated files) once
+  // per pair instead of once per call. Only the final criterion message varies.
   return [
     { role: 'system', content: SYSTEM_PROMPT },
     { role: 'user', content: [{ type: 'text' as const, text: '=== Task context ===\n' }, ...context] },
     {
       role: 'user',
-      content: `=== Candidate A ===\n${candidateA}\n\n=== Candidate B ===\n${candidateB}\n\n`
-        + `=== Criterion: ${criterion.name} ===\n${criterion.question}\n\n`
+      content: `=== Candidate A ===\n${candidateA}\n\n=== Candidate B ===\n${candidateB}`,
+    },
+    {
+      role: 'user',
+      content: `=== Criterion: ${criterion.name} ===\n${criterion.question}\n\n`
         + `Score both candidates on this criterion alone (${SCORE_MIN}-${SCORE_MAX}).`,
     },
   ]
