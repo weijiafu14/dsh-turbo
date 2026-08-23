@@ -28,6 +28,10 @@ const DSH_CLI_SPEC = process.env.DSH_TURBO_CLI_SPEC ?? '@deepseek-ai/dsh@0.1.1-r
 const TUI_SPEC = process.env.DSH_TURBO_TUI_SPEC ?? '@deepseek-harness-tui/dsh-tui'
 const TMUX_SESSION = 'dsh-turbo-mount-e2e'
 const keep = process.argv.includes('--keep')
+// What the profile installs. Default: this working tree, packed the way npm
+// would ship it. Set to a registry spec (`dsh-turbo@0.1.0`) for the bare
+// verification a stranger's install actually exercises.
+const SPEC = process.env.DSH_TURBO_SPEC
 
 const log = message => console.log(`[mount-e2e] ${message}`)
 
@@ -75,11 +79,17 @@ async function waitFor(what, probe, timeoutMs) {
 
 let failed = false
 try {
-  // ---- 1. pack this working tree exactly as npm would ship it ------------
-  log('packing dsh-turbo …')
-  const packOut = execSync('corepack pnpm@11.7.0 pack --silent', { cwd: projectRoot, env: baseEnv, encoding: 'utf8' }).trim()
-  const tarball = join(projectRoot, packOut.split('\n').pop().trim().split('/').pop())
-  log(`tarball: ${tarball}`)
+  // ---- 1. what the profile installs --------------------------------------
+  let installSpec
+  if (SPEC === undefined) {
+    log('packing dsh-turbo …')
+    const packOut = execSync('corepack pnpm@11.7.0 pack --silent', { cwd: projectRoot, env: baseEnv, encoding: 'utf8' }).trim()
+    installSpec = join(projectRoot, packOut.split('\n').pop().trim().split('/').pop())
+    log(`tarball: ${installSpec}`)
+  } else {
+    installSpec = SPEC
+    log(`installing from the registry: ${installSpec}`)
+  }
 
   // ---- 2. stock CLI from npm ---------------------------------------------
   await mkdir(cliDir, { recursive: true })
@@ -106,13 +116,22 @@ try {
   log(`stock CLI ready: ${cliVersion}`)
 
   // ---- 3. the documented user command ------------------------------------
-  log(`dsh plugin add ${TUI_SPEC} + dsh-turbo tarball …`)
-  await execFile(dshBin, ['plugin', '--profile', 'tui', 'add', '-w', TUI_SPEC, tarball], {
+  log(`dsh plugin add ${TUI_SPEC} + ${installSpec} …`)
+  await execFile(dshBin, ['plugin', '--profile', 'tui', 'add', '-w', TUI_SPEC, installSpec], {
     env: baseEnv, timeout: 600_000, maxBuffer: 32 * 1024 * 1024,
   })
   const profileRoot = join(home, 'profiles', 'tui')
   const installed = JSON.parse(await readFile(join(profileRoot, 'node_modules', 'dsh-turbo', 'package.json'), 'utf8'))
   log(`profile carries dsh-turbo@${installed.version}`)
+  // A registry run must land the exact version it asked for: pnpm metadata
+  // caches have served a stale `latest` before, and a regression that cannot
+  // name its build proves nothing.
+  if (SPEC !== undefined && SPEC.includes('@')) {
+    const wanted = SPEC.slice(SPEC.lastIndexOf('@') + 1)
+    if (installed.version !== wanted) {
+      throw new Error(`asked for dsh-turbo@${wanted} but the profile installed ${installed.version}`)
+    }
+  }
 
   // ---- 4. real TUI, real model selector ----------------------------------
   await execFile('tmux', ['kill-session', '-t', TMUX_SESSION]).catch(() => {})
