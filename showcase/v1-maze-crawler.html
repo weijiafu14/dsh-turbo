@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Maze Explorer</title>
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: #05050a; font-family: 'Segoe UI', system-ui, sans-serif; }
+  #game { position: fixed; inset: 0; }
+  canvas { display: block; }
+
+  /* Crosshair */
+  #crosshair {
+    position: fixed; left: 50%; top: 50%; width: 20px; height: 20px;
+    transform: translate(-50%,-50%); pointer-events: none; z-index: 20; opacity: .7;
+  }
+  #crosshair::before, #crosshair::after {
+    content: ""; position: absolute; background: #aef; opacity: .8;
+  }
+  #crosshair::before { left: 9px; top: 0; width: 2px; height: 20px; }
+  #crosshair::after  { top: 9px; left: 0; height: 2px; width: 20px; }
+
+  /* HUD (top-left) */
+  #hud {
+    position: fixed; top: 14px; left: 14px; z-index: 15; color: #cfe7ff;
+    text-shadow: 0 0 6px #000; font-size: 15px; font-weight: 600;
+    background: rgba(8,12,22,.45); padding: 10px 14px; border-radius: 8px;
+    border: 1px solid rgba(120,180,255,.25); backdrop-filter: blur(3px);
+  }
+  #hud .orb { color: #7ff7ff; }
+  #hud .sub { font-size: 11px; font-weight: 400; color: #9fb6cc; margin-top: 3px; max-width: 240px; line-height: 1.4; }
+
+  /* Mini-map (top-right) */
+  #minimap {
+    position: fixed; top: 14px; right: 14px; z-index: 15;
+    background: rgba(8,12,22,.55); padding: 6px; border-radius: 8px;
+    border: 1px solid rgba(120,180,255,.25);
+  }
+  #minimap canvas { display: block; width: 180px; height: 180px; border-radius: 4px; }
+  #minimap .cap { color: #9fb6cc; font-size: 10px; text-align: center; margin-top: 4px; letter-spacing: .5px; }
+
+  /* Overlays */
+  .overlay {
+    position: fixed; inset: 0; z-index: 30; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center;
+    background: rgba(3,4,10,.82); color: #dfeaff;
+    transition: opacity .35s ease; user-select: none;
+  }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .overlay h1 { font-size: 44px; margin: 0 0 10px; letter-spacing: 2px; color: #fff; text-shadow: 0 0 18px rgba(120,200,255,.8); }
+  .overlay .tag { color: #8fd0ff; margin-bottom: 22px; font-size: 15px; }
+  .overlay .btn {
+    cursor: pointer; padding: 12px 34px; font-size: 17px; font-weight: 700; color: #041018;
+    background: linear-gradient(180deg,#7fe0ff,#2ea6d6); border: none; border-radius: 999px;
+    box-shadow: 0 0 24px rgba(80,190,255,.6); letter-spacing: 1px;
+  }
+  .overlay .btn:hover { filter: brightness(1.1); }
+  .overlay .keys { margin-top: 22px; font-size: 13px; color: #9fb6cc; line-height: 1.7; }
+  .overlay .keys b { color: #cfdfff; }
+  .overlay .winbig { color: #7dffb0; text-shadow: 0 0 24px rgba(80,255,150,.9); }
+  .overlay .stats { margin-top: 14px; font-size: 15px; color: #bcd; }
+</style>
+</head>
+<body>
+  <div id="game"></div>
+  <div id="crosshair"></div>
+
+  <div id="hud">
+    <div>Orbs: <span class="orb" id="orbcount">0</span> / <span id="orbtotal">0</span></div>
+    <div class="sub">Reach the red goal (bottom-right). WASD move, mouse look, collect the cyan orbs.</div>
+  </div>
+
+  <div id="minimap">
+    <canvas id="mm" width="180" height="180"></canvas>
+    <div class="cap">MINI-MAP</div>
+  </div>
+
+  <div id="start" class="overlay">
+    <h1>MAZE EXPLORER</h1>
+    <div class="tag">First-person 3D maze · find the red goal</div>
+    <button class="btn" id="playBtn">Click to Play</button>
+    <div class="keys">
+      <b>W A S D</b> — move &nbsp;·&nbsp; <b>Mouse</b> — look around &nbsp;·&nbsp; <b>Esc</b> — release cursor<br>
+      Collect the glowing cyan orbs, then escape through the red marker.
+    </div>
+  </div>
+
+  <div id="win" class="overlay hidden">
+    <h1 class="winbig">YOU ESCAPED!</h1>
+    <div class="tag">You reached the red goal.</div>
+    <div class="stats" id="winstats"></div>
+    <button class="btn" id="againBtn">Play Again</button>
+  </div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  // =====================================================================
+  //  MAZE GENERATION  (recursive backtracker)  ->  grid of 0 (open) / 1 (wall)
+  // =====================================================================
+  const COLS = 15, ROWS = 15;          // number of corridors in each direction
+  const GW = COLS * 2 + 1;             // grid width  (wall units)
+  const GH = ROWS * 2 + 1;             // grid height (wall units)
+
+  // Deterministic RNG (mulberry32) so the maze is stable between runs
+  function mulberry32(a) {
+    return function () {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  const rng = mulberry32(1337);
+
+  // grid: 1 = wall, 0 = open passage
+  const grid = new Uint8Array(GW * GH).fill(1);
+  const idx = (x, z) => z * GW + x;
+  function isOpen(x, z) { return grid[idx(x, z)] === 0; }
+
+  // Carve passages with iterative backtracker over cell nodes
+  const stack = [];
+  const startCell = [1, 1];
+  grid[idx(startCell[0], startCell[1])] = 0;
+  stack.push(startCell);
+
+  const dirs = [[2,0],[-2,0],[0,2],[0,-2]];
+  while (stack.length) {
+    const [cx, cz] = stack[stack.length - 1];
+    const choices = [];
+    for (const [dx, dz] of dirs) {
+      const nx = cx + dx, nz = cz + dz;
+      if (nx > 0 && nx < GW - 1 && nz > 0 && nz < GH - 1 && grid[idx(nx, nz)] === 1) {
+        choices.push([dx, dz]);
+      }
+    }
+    if (choices.length === 0) { stack.pop(); continue; }
+    // Weight toward wandering so the path looks organic
+    const [dx, dz] = choices[(rng() * choices.length) | 0];
+    const nx = cx + dx, nz = cz + dz;
+    grid[idx(cx + dx / 2, cz + dz / 2)] = 0;  // knock out the wall between
+    grid[idx(nx, nz)] = 0;                    // carve the new cell
+    stack.push([nx, nz]);
+  }
+
+  // Ensure the goal cell (bottom-right) is open
+  const goalCell = [GW - 2, GH - 2];
+  grid[idx(goalCell[0], goalCell[1])] = 0;
+
+  // List open cells (for non-blocked cell placement)
+  const openCells = [];
+  for (let z = 1; z < GH - 1; z++)
+    for (let x = 1; x < GW - 1; x++)
+      if (grid[idx(x, z)] === 0 && (x & 1) === 1 && (z & 1) === 1) openCells.push([x, z]);
+
+  // =====================================================================
+  //  WORLD COORDINATES
+  // =====================================================================
+  const CELL = 4;                 // corridor centre-to-centre distance
+  const HALF = CELL / 2;          // 2 (grid step between adjacent wall nodes)
+  const WALL_T = 0.6;             // wall thickness
+  const WALL_H = 4.0;             // wall / ceiling height
+  const EXT = WALL_T / 2;         // small overhang to seal joints
+
+  const worldSpanX = (GW - 1) * HALF;   // full maze width in world units
+  const worldSpanZ = (GH - 1) * HALF;
+  const OFX = (GW - 1) / 2;             // grid offset to centre maze at origin
+  const OFZ = (GH - 1) / 2;
+  // grid node (gx,gz) -> world (x,z)
+  function toWorld(gx, gz) { return [ (gx - OFX) * HALF, (gz - OFZ) * HALF ]; }
+
+  const spawnWorld = toWorld(startCell[0], startCell[1]);
+  const goalWorld  = toWorld(goalCell[0],  goalCell[1]);
+  const EYE = 1.6;
+  const PLAYER_R = 0.45;
+
+  // =====================================================================
+  //  THREE SETUP
+  // =====================================================================
+  const container = document.getElementById("game");
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x05050a);
+  scene.fog = new THREE.Fog(0x05050a, 6, 46);
+
+  const camera = new THREE.PerspectiveCamera(72, innerWidth / innerHeight, 0.1, 200);
+  camera.position.set(spawnWorld[0], EYE, spawnWorld[1]);
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.15;
+  renderer.shadowMap.enabled = false;
+  container.appendChild(renderer.domElement);
+
+  // --- lighting -------------------------------------------------------
+  const amb = new THREE.AmbientLight(0x37404f, 0.85);
+  scene.add(amb);
+  const hemi = new THREE.HemisphereLight(0x24304a, 0x171009, 0.55);
+  scene.add(hemi);
+
+  // =====================================================================
+  //  PROCEDURAL CANVAS TEXTURES
+  // =====================================================================
+  function makeStoneTexture(base, variant, repeat) {
+    const c = document.createElement("canvas");
+    c.width = c.height = 256;
+    const g = c.getContext("2d");
+    g.fillStyle = base;
+    g.fillRect(0, 0, 256, 256);
+
+    // subtle large mottling
+    for (let i = 0; i < 60; i++) {
+      const r = 12 + rng() * 40;
+      g.fillStyle = "rgba(" + (variant[0]+((rng()*30)|0)) + "," + (variant[1]+((rng()*30)|0)) + "," + (variant[2]+((rng()*30)|0)) + ",0.06)";
+      g.beginPath();
+      g.arc(rng() * 256, rng() * 256, r, 0, Math.PI * 2);
+      g.fill();
+    }
+    // grain noise
+    for (let i = 0; i < 12000; i++) {
+      const v = 40 + (rng() * 160) | 0;
+      g.fillStyle = "rgba(" + v + "," + v + "," + v + "," + (0.03 + rng() * 0.09).toFixed(3) + ")";
+      g.fillRect((rng() * 256) | 0, (rng() * 256) | 0, 1 + ((rng() * 3) | 0), 1 + ((rng() * 3) | 0));
+    }
+    // cracks
+    g.strokeStyle = "rgba(0,0,0,0.35)";
+    g.lineWidth = 1.2;
+    for (let i = 0; i < 10; i++) {
+      let x = rng() * 256, y = rng() * 256;
+      g.beginPath(); g.moveTo(x, y);
+      for (let s = 0; s < 7; s++) {
+        x += (rng() - 0.5) * 60; y += (rng() - 0.5) * 60;
+        g.lineTo(x, y);
+      }
+      g.stroke();
+    }
+    // occasional highlight ridges
+    g.strokeStyle = "rgba(255,255,255,0.08)";
+    g.lineWidth = 1;
+    for (let i = 0; i < 5; i++) {
+      g.beginPath();
+      let x = rng() * 256, y = rng() * 256;
+      g.moveTo(x, y);
+      x += (rng() - 0.5) * 120; y += (rng() - 0.5) * 120;
+      g.lineTo(x, y); g.stroke();
+    }
+
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(repeat, repeat);
+    tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    return tex;
+  }
+
+  const wallTex   = makeStoneTexture("#6d655c", [120, 112, 102], 2);
+  const floorTex  = makeStoneTexture("#3f3a35", [80, 74, 68], 12);
+  const ceilTex   = makeStoneTexture("#4a443e", [92, 86, 78], 12);
+
+  const wallMat   = new THREE.MeshStandardMaterial({ map: wallTex, roughness: 0.95, metalness: 0.02 });
+  const floorMat  = new THREE.MeshStandardMaterial({ map: floorTex, roughness: 1.0, metalness: 0.0 });
+  const ceilMat   = new THREE.MeshStandardMaterial({ map: ceilTex, roughness: 1.0, metalness: 0.0 });
+
+  // =====================================================================
+  //  FLOOR & CEILING
+  // =====================================================================
+  const spanW = worldSpanX + WALL_T, spanD = worldSpanZ + WALL_T;
+  const floorGeo = new THREE.PlaneGeometry(spanW, spanD);
+  const floorMesh = new THREE.Mesh(floorGeo, floorMat);
+  floorMesh.rotation.x = -Math.PI / 2;
+  floorMesh.position.y = 0;
+  scene.add(floorMesh);
+
+  const ceilMesh = new THREE.Mesh(floorGeo, ceilMat);
+  ceilMesh.rotation.x = Math.PI / 2;
+  ceilMesh.position.y = WALL_H;
+  scene.add(ceilMesh);
+
+  // =====================================================================
+  //  WALLS  (single InstancedMesh, one draw call)
+  // =====================================================================
+  // Build list of wall boxes: { cx, cz, sx, sz }
+  const wallBoxes = [];
+  for (let gz = 0; gz < GH; gz++) {
+    for (let gx = 0; gx < GW; gx++) {
+      if (grid[idx(gx, gz)] !== 1) continue;
+      const [wx, wz] = toWorld(gx, gz);
+      const gxEven = (gx % 2 === 0), gzEven = (gz % 2 === 0);
+      if (gxEven && gzEven) {
+        // corner post
+        wallBoxes.push({ cx: wx, cz: wz, sx: WALL_T, sz: WALL_T });
+      } else if (gxEven) {
+        // vertical wall (separates left/right corridors)
+        wallBoxes.push({ cx: wx, cz: wz, sx: WALL_T, sz: CELL + EXT });
+      } else {
+        // horizontal wall (separates front/back corridors)
+        wallBoxes.push({ cx: wx, cz: wz, sx: CELL + EXT, sz: WALL_T });
+      }
+    }
+  }
+
+  const unitBox = new THREE.BoxGeometry(1, 1, 1);
+  const inst = new THREE.InstancedMesh(unitBox, wallMat, wallBoxes.length);
+  inst.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+  const m4 = new THREE.Matrix4();
+  for (let i = 0; i < wallBoxes.length; i++) {
+    const b = wallBoxes[i];
+    m4.makeScale(b.sx, WALL_H, b.sz);
+    m4.setPosition(b.cx, WALL_H / 2, b.cz);
+    inst.setMatrixAt(i, m4);
+  }
+  inst.instanceMatrix.needsUpdate = true;
+  scene.add(inst);
+
+  // Collision AABBs (axis-aligned), slightly expanded for safety
+  const colliders = wallBoxes.map(b => ({
+    minX: b.cx - b.sx / 2, maxX: b.cx + b.sx / 2,
+    minZ: b.cz - b.sz / 2, maxZ: b.cz + b.sz / 2
+  }));
+
+  function collides(x, z) {
+    for (let i = 0; i < colliders.length; i++) {
+      const c = colliders[i];
+      const px = Math.max(c.minX, Math.min(x, c.maxX));
+      const pz = Math.max(c.minZ, Math.min(z, c.maxZ));
+      const dx = x - px, dz = z - pz;
+      if (dx * dx + dz * dz < PLAYER_R * PLAYER_R) return true;
+    }
+    return false;
+  }
+
+  // =====================================================================
+  //  TORCHES  (flickering point lights mounted on walls)
+  // =====================================================================
+  const torchList = [];
+  // place torches on a coarse sub-grid of open cells
+  const cand = [];
+  for (let gz = 1; gz < GH - 1; gz += 8)
+    for (let gx = 1; gx < GW - 1; gx += 8)
+      cand.push([gx, gz]);
+  // always cover spawn and goal
+  cand.push([startCell[0], startCell[1]], [goalCell[0], goalCell[1]]);
+
+  const flameMat = new THREE.MeshStandardMaterial({
+    color: 0xff9a2a, emissive: 0xff7b00, emissiveIntensity: 2.2, roughness: 1
+  });
+  const handleMat = new THREE.MeshStandardMaterial({ color: 0x2a1a0e, roughness: 0.9, metalness: 0.1 });
+  const flameGeo = new THREE.SphereGeometry(0.14, 12, 12);
+  const handleGeo = new THREE.BoxGeometry(0.08, 0.7, 0.08);
+
+  const KN = [[2,0],[-2,0],[0,2],[0,-2]];
+  for (const [cgx, cgz] of cand) {
+    if (!isOpen(cgx, cgz)) continue;
+    const [cx, cz] = toWorld(cgx, cgz);
+    // find a wall neighbour to mount onto
+    let dir = null;
+    for (const [dx, dz] of KN) {
+      if (!isOpen(cgx + dx, cgz + dz)) { dir = [dx, dz]; break; }
+    }
+    // mount position: just off the corridor-facing wall face
+    let bx = cx, bz = cz;
+    if (dir) {
+      bx = cx + (dir[0] / 2) * (HALF - WALL_T / 2 - 0.18);
+      bz = cz + (dir[1] / 2) * (HALF - WALL_T / 2 - 0.18);
+    }
+    const group = new THREE.Group();
+    group.position.set(bx, WALL_H - 0.9, bz);
+
+    const handle = new THREE.Mesh(handleGeo, handleMat);
+    handle.position.set(0, -0.35, 0);
+    group.add(handle);
+
+    const flame = new THREE.Mesh(flameGeo, flameMat);
+    group.add(flame);
+
+    const light = new THREE.PointLight(0xff8a2a, 1.6, 13, 2);
+    light.position.set(0, 0.1, 0);
+    group.add(light);
+
+    scene.add(group);
+    torchList.push({ light, flame, base: 1.6, phase: rng() * Math.PI * 2 });
+  }
+
+  // =====================================================================
+  //  SPAWN & GOAL MARKERS
+  // =====================================================================
+  // Green spawn ring on the floor (matches the image's green marker)
+  const spawnRingGeo = new THREE.RingGeometry(0.5, 0.7, 28);
+  const spawnRing = new THREE.Mesh(spawnRingGeo, new THREE.MeshBasicMaterial({ color: 0x37e06a, transparent: true, opacity: 0.9, side: THREE.DoubleSide }));
+  spawnRing.rotation.x = -Math.PI / 2;
+  spawnRing.position.set(spawnWorld[0], 0.02, spawnWorld[1]);
+  scene.add(spawnRing);
+
+  // Red goal marker (rotating octahedron + light), matches the image's red diamond
+  const goalMesh = new THREE.Mesh(new THREE.OctahedronGeometry(0.42, 0), new THREE.MeshStandardMaterial({ color: 0xff3324, emissive: 0xff1a00, emissiveIntensity: 1.8, roughness: 0.25, metalness: 0.3 }));
+  goalMesh.position.set(goalWorld[0], 1.3, goalWorld[1]);
+  scene.add(goalMesh);
+  const goalLight = new THREE.PointLight(0xff3020, 1.6, 12, 2);
+  goalLight.position.set(goalWorld[0], 1.3, goalWorld[1]);
+  scene.add(goalLight);
+  const goalPillar = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.45, 0.2, 20), new THREE.MeshStandardMaterial({ color: 0x55201a, roughness: 0.8 }));
+  goalPillar.position.set(goalWorld[0], 0.1, goalWorld[1]);
+  scene.add(goalPillar);
+
+  // =====================================================================
+  //  COLLECTIBLE ORBS
+  // =====================================================================
+  // radial glow sprite texture
+  function makeGlowTex(r, g2, b) {
+    const c = document.createElement("canvas"); c.width = c.height = 64;
+    const x = c.getContext("2d");
+    const grd = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+    grd.addColorStop(0, "rgba(" + r + "," + g2 + "," + b + ",0.9)");
+    grd.addColorStop(0.4, "rgba(" + r + "," + g2 + "," + b + ",0.35)");
+    grd.addColorStop(1, "rgba(" + r + "," + g2 + "," + b + ",0)");
+    x.fillStyle = grd; x.fillRect(0, 0, 64, 64);
+    const t = new THREE.CanvasTexture(c);
+    return t;
+  }
+  const glowTex = makeGlowTex(120, 255, 255);
+  const orbCore = new THREE.MeshStandardMaterial({ color: 0x8ffcff, emissive: 0x2bd8ff, emissiveIntensity: 2.0, roughness: 0.2, metalness: 0.1 });
+  const orbGeo = new THREE.SphereGeometry(0.28, 20, 20);
+  const spriteMat = new THREE.SpriteMaterial({ map: glowTex, color: 0x66e8ff, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+
+  const orbs = [];
+  const ORB_TARGET = 8;
+  // pick spread-out open cells (skip spawn/goal)
+  const orbCandidates = openCells.filter(([x, z]) =>
+    !(x === startCell[0] && z === startCell[1]) && !(x === goalCell[0] && z === goalCell[1]));
+  const step = Math.max(1, Math.floor(orbCandidates.length / ORB_TARGET));
+  let orbIndex = 0;
+  for (let i = 0; i < ORB_TARGET; i++) {
+    const [x, z] = orbCandidates[(i * step) % orbCandidates.length];
+    const [wx, wz] = toWorld(x, z);
+    const grp = new THREE.Group();
+    grp.position.set(wx, 1.1, wz);
+    const core = new THREE.Mesh(orbGeo, orbCore);
+    grp.add(core);
+    const sp = new THREE.Sprite(spriteMat);
+    sp.scale.set(1.6, 1.6, 1.6);
+    grp.add(sp);
+    scene.add(grp);
+    orbs.push({ grp, col: false, phase: rng() * Math.PI * 2 });
+  }
+
+  // =====================================================================
+  //  INPUT / PLAYER CONTROLS
+  // =====================================================================
+  let yaw = 0, pitch = 0;
+  // face toward maze interior (goal direction) on spawn
+  (function () {
+    // camera forward (pitch=0) is (-sin yaw, 0, -cos yaw); face toward the interior/goal
+    const dx = goalWorld[0] - spawnWorld[0], dz = goalWorld[1] - spawnWorld[1];
+    yaw = Math.atan2(-dx, -dz);
+  })();
+
+  const keys = Object.create(null);
+  addEventListener("keydown", e => { keys[e.code] = true; });
+  addEventListener("keyup", e => { keys[e.code] = false; });
+
+  const startEl = document.getElementById("start");
+  const winEl = document.getElementById("win");
+  let locked = false;
+
+  function lockPointer() {
+    renderer.domElement.requestPointerLock && renderer.domElement.requestPointerLock();
+  }
+  document.getElementById("playBtn").addEventListener("click", () => { startEl.classList.add("hidden"); lockPointer(); });
+  document.getElementById("againBtn").addEventListener("click", location.reload.bind(location));
+
+  document.addEventListener("pointerlockchange", () => {
+    locked = document.pointerLockElement === renderer.domElement;
+    if (locked) { startEl.classList.add("hidden"); }
+    else if (!won) { startEl.classList.remove("hidden"); startEl.querySelector(".tag").textContent = "Paused — click to keep exploring the maze."; }
+  });
+
+  addEventListener("mousemove", e => {
+    if (!locked) return;
+    yaw   -= e.movementX * 0.0022;
+    pitch -= e.movementY * 0.0022;
+    pitch = Math.max(-1.5, Math.min(1.5, pitch));
+  });
+
+  const speed = 6.2;
+
+  // =====================================================================
+  //  GAME STATE
+  // =====================================================================
+  let won = false;
+  let collected = 0;
+  const orbCountEl = document.getElementById("orbcount");
+  const orbTotalEl = document.getElementById("orbtotal");
+  orbTotalEl.textContent = orbs.length;
+
+  const mmCanvas = document.getElementById("mm");
+  const mmCtx = mmCanvas.getContext("2d");
+  const MM = mmCanvas.width;
+  const mmScale = MM / (worldSpanX);   // world -> minimap pixels
+
+  function drawMinimap() {
+    mmCtx.fillStyle = "rgba(10,16,28,0.95)";
+    mmCtx.fillRect(0, 0, MM, MM);
+    // walls -> light lines
+    mmCtx.strokeStyle = "rgba(120,190,255,0.9)";
+    mmCtx.lineWidth = 1.4;
+    mmCtx.beginPath();
+    for (const b of wallBoxes) {
+      const sx = (b.cx + worldSpanX / 2) * mmScale;
+      const sy = (b.cz + worldSpanZ / 2) * mmScale;
+      if (b.sx >= b.sz) { // horizontal
+        mmCtx.moveTo(sx - (b.sx / 2) * mmScale, sy);
+        mmCtx.lineTo(sx + (b.sx / 2) * mmScale, sy);
+      } else { // vertical
+        mmCtx.moveTo(sx, sy - (b.sz / 2) * mmScale);
+        mmCtx.lineTo(sx, sy + (b.sz / 2) * mmScale);
+      }
+    }
+    mmCtx.stroke();
+
+    // orbs
+    for (const o of orbs) if (!o.col) {
+      mmCtx.fillStyle = "#4ef0ff";
+      mmCtx.beginPath();
+      mmCtx.arc((o.grp.position.x + worldSpanX / 2) * mmScale, (o.grp.position.z + worldSpanZ / 2) * mmScale, 3, 0, Math.PI * 2);
+      mmCtx.fill();
+    }
+    // goal
+    mmCtx.fillStyle = "#ff3324";
+    mmCtx.beginPath();
+    mmCtx.arc((goalWorld[0] + worldSpanX / 2) * mmScale, (goalWorld[1] + worldSpanZ / 2) * mmScale, 5, 0, Math.PI * 2);
+    mmCtx.fill();
+    // player
+    mmCtx.fillStyle = "#37e06a";
+    mmCtx.beginPath();
+    mmCtx.arc((camera.position.x + worldSpanX / 2) * mmScale, (camera.position.z + worldSpanZ / 2) * mmScale, 4, 0, Math.PI * 2);
+    mmCtx.fill();
+    // facing tick (camera forward on XZ plane)
+    const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
+    mmCtx.strokeStyle = "#37e06a"; mmCtx.lineWidth = 2;
+    mmCtx.beginPath();
+    mmCtx.moveTo((camera.position.x + worldSpanX / 2) * mmScale, (camera.position.z + worldSpanZ / 2) * mmScale);
+    mmCtx.lineTo((camera.position.x + fx * 9 + worldSpanX / 2) * mmScale, (camera.position.z + fz * 9 + worldSpanZ / 2) * mmScale);
+    mmCtx.stroke();
+  }
+
+  // =====================================================================
+  //  MAIN LOOP
+  // =====================================================================
+  const clock = new THREE.Clock();
+  const fwd = new THREE.Vector3(), right = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
+
+  function animate() {
+    requestAnimationFrame(animate);
+    const dt = Math.min(clock.getDelta(), 0.05);
+    const t = clock.getElapsedTime();
+
+    // ---- movement ----
+    if (locked && !won) {
+      fwd.set(0, 0, -1).applyQuaternion(camera.quaternion);
+      fwd.y = 0; fwd.normalize();
+      right.crossVectors(fwd, up).normalize();
+
+      let mx = 0, mz = 0;
+      if (keys["KeyW"]) { mx += fwd.x; mz += fwd.z; }
+      if (keys["KeyS"]) { mx -= fwd.x; mz -= fwd.z; }
+      if (keys["KeyD"]) { mx += right.x; mz += right.z; }
+      if (keys["KeyA"]) { mx -= right.x; mz -= right.z; }
+
+      const len = Math.hypot(mx, mz);
+      if (len > 0) {
+        mx = mx / len * speed * dt;
+        mz = mz / len * speed * dt;
+        // axis-separated collision (slide along walls)
+        let nx = camera.position.x + mx;
+        if (!collides(nx, camera.position.z)) camera.position.x = nx;
+        let nz = camera.position.z + mz;
+        if (!collides(camera.position.x, nz)) camera.position.z = nz;
+      }
+    }
+
+    camera.position.y = EYE;
+    camera.quaternion.setFromEuler(new THREE.Euler(pitch, yaw, 0, "YXZ"));
+
+    // ---- torches flicker ----
+    for (const tc of torchList) {
+      const f = 0.78 + 0.22 * Math.sin(t * 9 + tc.phase) * Math.sin(t * 13.7 + tc.phase * 2);
+      tc.light.intensity = tc.base * (0.75 + 0.45 * f) + (rng() - 0.5) * 0.12;
+      tc.flame.scale.setScalar(0.9 + 0.2 * f);
+    }
+
+    // ---- goal + spawn animation ----
+    goalMesh.rotation.y += dt * 1.5;
+    goalMesh.position.y = 1.3 + Math.sin(t * 2) * 0.12;
+    goalLight.intensity = 1.4 + Math.sin(t * 4) * 0.4;
+    spawnRing.material.opacity = 0.55 + 0.35 * Math.sin(t * 3);
+
+    // ---- orbs ----
+    for (const o of orbs) {
+      if (o.col) continue;
+      o.grp.rotation.y += dt * 1.2;
+      o.grp.position.y = 1.1 + Math.sin(t * 2 + o.phase) * 0.16;
+      const dx = camera.position.x - o.grp.position.x;
+      const dz = camera.position.z - o.grp.position.z;
+      if (dx * dx + dz * dz < 1.4) {
+        o.col = true;
+        o.grp.visible = false;
+        collected++;
+        orbCountEl.textContent = collected;
+      }
+    }
+
+    // ---- win check ----
+    if (!won) {
+      const gdx = camera.position.x - goalWorld[0];
+      const gdz = camera.position.z - goalWorld[1];
+      if (gdx * gdx + gdz * gdz < 1.6) {
+        won = true;
+        document.getElementById("winstats").textContent =
+          "Orbs collected: " + collected + " / " + orbs.length;
+        winEl.classList.remove("hidden");
+        if (document.pointerLockElement) document.exitPointerLock();
+      }
+    }
+
+    drawMinimap();
+    renderer.render(scene, camera);
+  }
+
+  addEventListener("resize", () => {
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+  });
+
+  animate();
+})();
+</script>
+</body>
+</html>
