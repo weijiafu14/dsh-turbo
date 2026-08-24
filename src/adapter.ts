@@ -89,8 +89,12 @@ export interface TurboDecision {
   survivors: number
   failed: number
   winner: number
-  /** Whether verification failed and the first survivor was used instead. */
+  /** Whether verification failed outright and the first survivor was used instead. */
   degraded: boolean
+  /** Evaluations that fell back to the neutral reward (call failed or unreadable). */
+  neutralEvaluations: number
+  /** Evaluations that produced a real score. Zero means the ranking carried no information. */
+  usableEvaluations: number
   outcome?: TournamentOutcome
   candidates: {
     temperature: number | undefined
@@ -376,6 +380,8 @@ export class TurboAdapter extends LlmAdapter {
       let winnerAt = 0
       let outcome: TournamentOutcome | undefined
       let degraded = false
+      let neutralEvaluations = 0
+      let usableEvaluations = 0
 
       if (survivors.length > 1) {
         const context = renderContext(options, images)
@@ -398,6 +404,8 @@ export class TurboAdapter extends LlmAdapter {
                 extraUsage.cacheReadTokens += cacheRead
                 extraUsage.calls += 1
               },
+              onNeutral: () => { neutralEvaluations += 1 },
+              onScored: () => { usableEvaluations += 1 },
             }),
             {
               pivots: connection.pivots,
@@ -406,6 +414,15 @@ export class TurboAdapter extends LlmAdapter {
             },
           )
           winnerAt = outcome.winner
+          // Upstream defaults an unreadable evaluation to the neutral reward so
+          // one broken criterion cannot re-weight the rest. Taken to its limit
+          // that hides a total verification outage behind a tie-broken pick, so
+          // a run where NOTHING scored is reported as degraded rather than
+          // presented as a ranking.
+          if (usableEvaluations === 0) {
+            degraded = true
+            winnerAt = 0
+          }
         } catch (error: unknown) {
           if (options.signal?.aborted) throw error
           // Verification breaking must not waste N good candidates: degrade
@@ -436,6 +453,8 @@ export class TurboAdapter extends LlmAdapter {
         failed,
         winner: winnerAt,
         degraded,
+        neutralEvaluations,
+        usableEvaluations,
         ...outcome === undefined ? {} : { outcome },
         candidates: survivors.map(candidate => ({
           temperature: candidate.temperature,
@@ -446,12 +465,12 @@ export class TurboAdapter extends LlmAdapter {
         extraUsage,
         durationMs: Date.now() - startedAt,
       })
-      const winnerWins = outcome === undefined ? undefined : outcome.wins[winnerAt]
+      const winnerPreference = outcome === undefined ? undefined : outcome.meanPreference[winnerAt]
       report(
         degraded
           ? 'turbo: verification failed, used first candidate'
           : survivors.length > 1
-            ? `turbo: winner #${winnerAt + 1}/${survivors.length} (BT ${winnerWins === undefined ? '?' : winnerWins.toFixed(2)})`
+            ? `turbo: winner #${winnerAt + 1}/${survivors.length} (pref ${winnerPreference === undefined ? '?' : winnerPreference.toFixed(2)})`
             : 'turbo: single surviving candidate',
       )
 

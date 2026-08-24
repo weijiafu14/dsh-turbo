@@ -253,7 +253,12 @@ function describeDecision(decision: TurboDecision): string {
       : `  winner #${decision.winner + 1}`
       + (decision.outcome === undefined
         ? ''
-        : ` — BT wins [${decision.outcome.wins.map(w => w.toFixed(2)).join(', ')}], pivots [${decision.outcome.pivots.map(p => p + 1).join(', ')}]`),
+        : ` — mean preference [${decision.outcome.meanPreference.map(w => w.toFixed(2)).join(', ')}]`
+        + `, pivots [${decision.outcome.pivots.map(p => p + 1).join(', ')}]`
+        + `, ${decision.outcome.pairs.length} pairs`),
+    decision.neutralEvaluations > 0
+      ? `  ${decision.neutralEvaluations} evaluation(s) fell back to the neutral score`
+      : '  every evaluation produced a usable score',
     `  extra spend: ${decision.extraUsage.inputTokens} in / ${decision.extraUsage.outputTokens} out`
     + ` / ${decision.extraUsage.cacheReadTokens} cached over ${decision.extraUsage.calls} calls, ${decision.durationMs}ms`,
   ]

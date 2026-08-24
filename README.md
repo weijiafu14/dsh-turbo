@@ -33,11 +33,20 @@ Images flow end to end: candidates receive them as real multimodal input, and th
 Every conversation model call (auxiliary calls like compaction/session titles pass straight through):
 
 1. **Sample** — N=5 parallel generations against the DeepSeek API, spread over a temperature ladder.
-2. **Verify** — pairwise comparative prompts; the verifier answers with integer scores 1–20 in `<score_A>`/`<score_B>` tags, requested with `logprobs: true, top_logprobs: 20`. The continuous reward is the **expectation over the score token's probability distribution**, not the argmax — the paper's key signal (one logprob evaluation ≈ 16 discrete-judge evaluations). Scores decompose over three criteria (specification adherence / output match / error signals) and can repeat K times.
-3. **Select** — a **Probabilistic Pivot Tournament**: one ring pass over a random circuit (each candidate judged once as A and once as B, cancelling position bias), top ring scorers become pivots, everyone else is compared against the pivots, and Bradley-Terry preference probabilities accumulate into win totals. Sub-quadratic in N.
+2. **Verify** — pairwise comparative prompts on a 20-point scale anchored on *how likely the candidate actually solved the task*, requested with `logprobs: true, top_logprobs: 20`. The reward is the **expectation over the score token's probability distribution**, not the argmax — the paper's key signal (one logprob evaluation ≈ 16 discrete-judge votes) — normalized to [0, 1]. Scores decompose over three criteria (specification adherence / output match / error signals), each seeing the same standing ground-truth note, and can repeat K times.
+3. **Select** — a **Probabilistic Pivot Tournament**: one ring pass over a random circuit (each candidate judged once as A and once as B, cancelling slot bias), top ring scorers become pivots, everyone else is compared against the pivots, and Bradley-Terry preferences aggregate into a **mean** preference per candidate. Sub-quadratic in N.
 4. **Replay** — the winner's stream chunks replay to the agent loop, which sees one ordinary model call. The winner's own token usage is reported (so context accounting stays correct); the extra spend of losing candidates and verifier calls is tracked separately.
 
-Verifier prompts share a byte-identical prefix (system + task context) across all pairs and criteria of a step, so DeepSeek prefix caching absorbs most of the verification input cost.
+Verifier prompts share a byte-identical prefix (system + note + task context) across every pair of a step, and the candidate-pair message is byte-identical across that pair's criterion calls, so DeepSeek prefix caching absorbs most of the verification input cost.
+
+### Fidelity to the reference implementation
+
+The scoring and selection follow [llm_verifier](https://github.com/llm-as-a-verifier/llm-as-a-verifier) v0.2.0 (2026-08-14), including the details its own issue history produced: the score distribution is read at the **last** `<score_A>` occurrence (a model that quotes the output format mid-analysis must not shadow its verdict), whitespace-only tokens are skipped when locating the tag, a fused `>` prefix is stripped from score tokens, and an unreadable evaluation contributes a neutral 0.5 rather than dropping out and silently re-weighting the rest.
+
+Two deliberate differences:
+
+- **Integers 1–20 instead of letters A–T.** Upstream uses letters because a single letter is one token on every backend. Probing the live DeepSeek API, the score position offered **18/20 legal integer alternatives versus 5/20 legal letter alternatives** — DeepSeek fuses the closing `>` into the letter token, so most alternatives there are unusable. On this provider integers carry more of the distribution the method depends on.
+- **A run where nothing scored is reported as degraded.** Defaulting an unreadable evaluation to neutral is upstream's behaviour, but taken to its limit it hides a total verification outage behind a tie-broken pick. `/turbo` and the decision log report `usableEvaluations`, and a run with none is marked degraded instead of presented as a ranking.
 
 ## Example: one image in, a playable 3D game out
 
@@ -55,7 +64,7 @@ Across those two turns: 25 fan-out steps, 5 candidates each, **zero degraded**,
 
 ## The `/turbo` command
 
-- `/turbo` — last decision (per-candidate scores, tournament outcome, previews) and cumulative extra spend.
+- `/turbo` — last decision (per-candidate mean preference, pivots, pair count, previews), how many evaluations fell back to neutral, and cumulative extra spend.
 - `/turbo off` / `/turbo on` — temporarily pass single calls through without switching models.
 
 Decision records also append to `$DSH_HOME/dsh-turbo/decisions.jsonl` for offline analysis.

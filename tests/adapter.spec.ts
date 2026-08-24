@@ -175,6 +175,12 @@ describe('TurboAdapter fan-out', () => {
     expect(decision.survivors).toBe(3)
     expect(decision.degraded).toBe(false)
     expect(decision.candidates[decision.winner]!.preview).toContain('GOOD')
+    expect(decision.neutralEvaluations).toBe(0)
+    // Selection is by mean preference, and the winner must lead on it.
+    const mean = decision.outcome!.meanPreference
+    for (const [i, value] of mean.entries()) {
+      if (i !== decision.winner) expect(mean[decision.winner]!).toBeGreaterThan(value)
+    }
     // Losing candidates' spend lands in extraUsage (their 11 + 33 output tokens).
     expect(decision.extraUsage.outputTokens).toBeGreaterThanOrEqual(44)
     expect(decision.extraUsage.calls).toBeGreaterThanOrEqual(2)
@@ -212,7 +218,12 @@ describe('TurboAdapter fan-out', () => {
     const { adapter, decisions } = build(connection())
     const chunks = await collect(adapter.stream(request()))
     expect(finalText(chunks)).toMatch(/^answer-at-/)
+    // Every evaluation fell back to neutral, so the ranking carried no
+    // information and the run must say so rather than dress a tie-break up as
+    // a verdict.
     expect(decisions[0]!.degraded).toBe(true)
+    expect(decisions[0]!.usableEvaluations).toBe(0)
+    expect(decisions[0]!.neutralEvaluations).toBeGreaterThan(0)
   })
 
   it('passes auxiliary calls straight through with a single request', async () => {

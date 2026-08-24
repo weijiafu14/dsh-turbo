@@ -1,6 +1,6 @@
 {
   "name": "dsh-turbo",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Best-of-N sampling with an LLM-as-a-Verifier judge for DeepSeek Harness: sample N candidates per model call, score them with fine-grained logprob verification, and stream back the tournament winner.",
   "type": "module",
   "license": "MIT",
